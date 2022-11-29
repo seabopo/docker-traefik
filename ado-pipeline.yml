@@ -1,0 +1,93 @@
+
+# Build and push Traefik Docker images to the Azure Container Registry and Docker Hub
+
+parameters:
+
+- name: ContainerRegistries
+  type: object
+  default:
+    - ID:         'dockerhub'
+      Name:       'Docker Hub'
+      Connection:  <your-dockerhub-connector>
+      Repository: 'seabopo/traefik'
+      Active:     true
+    - ID:         'azurecr'
+      Name:       'Azure Container Registry'
+      Connection: '<your-azure-connection-id>'
+      Repository: 'traefik'
+      Active:     true
+
+- name: BuildTasks
+  type: object
+  default:
+    - ID:         'nanoserver_1809'
+      BaseImage:  'mcr.microsoft.com/powershell:nanoserver-1809'
+      ImageTag:   'nanoserver-1809'
+      BuildAgent: 'windows-2019'
+      NetAPItag:  '1809'
+    - ID:         'nanoserver_ltsc2022'
+      BaseImage:  'mcr.microsoft.com/powershell:nanoserver-ltsc2022'
+      ImageTag:   'nanoserver-ltsc2022'
+      BuildAgent: 'windows-2022'
+      NetAPItag:  'ltsc2022'
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - master
+  paths:
+    exclude:
+    - README.md
+    - LICENSE
+    - ado-pipeline.yml
+
+resources:
+- repo: self
+
+variables:
+  appVersion: $(app-version)
+
+stages:
+
+- stage: Build
+  displayName: Build and push a Docker image
+  jobs:
+
+  - ${{ each ContainerRegistry in parameters.ContainerRegistries }}:
+
+    - ${{ each BuildTask in parameters.BuildTasks }}:
+
+      - job: Build_${{BuildTask.ID}}_${{ContainerRegistry.ID}}
+        displayName: Building ${{BuildTask.ImageTag}} for ${{ContainerRegistry.Name}}
+        condition: and(succeeded(), eq(${{ContainerRegistry.Active}}, 'true'))
+        pool:
+          vmImage: ${{BuildTask.BuildAgent}}
+        steps:
+
+        - task: Docker@2
+          displayName: Build a ${{BuildTask.ImageTag}} $(appVersion) image for ${{ContainerRegistry.Name}}
+          inputs:
+            command: build
+            arguments: |
+              --build-arg APP_VERSION=$(appVersion)
+              --build-arg BASE_IMAGE=${{BuildTask.BaseImage}}
+              --build-arg NETAPI_TAG=${{BuildTask.NetAPItag}}
+            dockerfile: '$(Build.SourcesDirectory)/dockerfile'
+            containerRegistry: ${{ContainerRegistry.Connection}}
+            repository: ${{ContainerRegistry.Repository}}
+            tags: |
+              $(Build.BuildNumber)-${{BuildTask.ImageTag}}-$(appVersion)
+              ${{BuildTask.ImageTag}}-$(appVersion)
+              ${{BuildTask.ImageTag}}
+
+        - task: Docker@2
+          displayName: Push ${{BuildTask.ImageTag}} $(appVersion) to ${{ContainerRegistry.Name}}
+          inputs:
+            command: push
+            containerRegistry: ${{ContainerRegistry.Connection}}
+            repository: ${{ContainerRegistry.Repository}}
+            tags: |
+              $(Build.BuildNumber)-${{BuildTask.ImageTag}}-$(appVersion)
+              ${{BuildTask.ImageTag}}-$(appVersion)
+              ${{BuildTask.ImageTag}}
